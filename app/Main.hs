@@ -7,6 +7,7 @@ import           ClassyPrelude
 import           Prelude             ((!!))
 
 import           Control.Monad.ST
+import qualified Data.Map.Strict     as M
 import qualified Data.Text           as T
 import qualified Data.Vector.Generic as V
 import qualified Data.Vector.Mutable as MV
@@ -141,13 +142,11 @@ unboundedNeighborIndices (irow, icol) =
 
 setNeighbors :: (Int, Int) -> Square -> Grid s Square -> ST s ()
 setNeighbors source tile rows =
-  forM_
-    (neighborIndices source)
-    (\index -> do
-       originalTile <- getTile index rows
-       case originalTile of
-         Empty -> return ()
-         _     -> setTile index tile rows)
+  forM_ (neighborIndices source) $ \index -> do
+    originalTile <- getTile index rows
+    case originalTile of
+      Empty -> return ()
+      _     -> setTile index tile rows
 
 applyJump :: (Int, Int) -> (Int, Int) -> Square -> BoardState s -> ST s ()
 applyJump src dest tile rows = do
@@ -165,27 +164,84 @@ applyMove :: Move -> Square -> BoardState s -> ST s ()
 applyMove jump@(Jump src dest) tile rows = applyJump src dest tile rows
 applyMove spawn@(Spawn src) tile rows    = applySpawn src tile rows
 
-main :: IO ()
-main = do
-  putStrLn "Hi!"
-  board <- stToIO $ blankGrid Empty
-  printBoard board
-  stToIO $ do
+applyBaseUILayer :: BoardState s -> BoardUI s -> ST s ()
+applyBaseUILayer rows uiRows =
+  mapM_ f indices
+  where
+    f irow = mapM_ f' indices
+      where f' icol = do
+              square <- getTile (irow, icol) rows
+              setTile (irow, icol) (showSquare square) uiRows
+
+uiChars :: [Char]
+uiChars = ['a'..'z'] <> ['A'..'Z']
+
+applySelectionLayer :: (tile -> Bool) -> Grid s tile -> BoardUI s -> ST s (M.Map Char (Int, Int))
+applySelectionLayer predicate rows uiRows = do
+  tileIndices <- findTiles predicate rows
+  let taggedIndices = zip uiChars tileIndices
+  forM_ taggedIndices $ \(char, index) -> setTile index char uiRows
+  return . M.fromList $ taggedIndices
+
+applyMoveSelectionLayer :: [Move] -> BoardUI s -> ST s (M.Map Char Move)
+applyMoveSelectionLayer moves uiRows = do
+  let taggedMoves = zip uiChars moves
+  forM_ taggedMoves $ \(char, move) -> setTile (moveIndex move) char uiRows
+  return . M.fromList $ taggedMoves
+  where moveIndex (Jump _src dest) = dest
+        moveIndex (Spawn src)      = src
+
+takeTurn :: Square -> BoardState RealWorld -> BoardUI RealWorld -> IO ()
+takeTurn player rows uiRows = do
+  stToIO $ applyBaseUILayer rows uiRows
+  printBoard uiRows
+  -- Choose a tile to move from
+  indexMap <- stToIO $ applySelectionLayer (== player) rows uiRows
+  printBoard uiRows
+  index <- askChar indexMap
+  -- Choose a move
+  moves <- stToIO $ validMoves index rows
+  stToIO $ applyBaseUILayer rows uiRows
+  moveMap <- stToIO $ applyMoveSelectionLayer moves uiRows
+  printBoard uiRows
+  move <- askChar moveMap
+  -- Apply the move
+  stToIO $ applyMove move player rows
+  where
+    printBoard board = do
+      putStrLn =<< stToIO (showGrid id board)
+      putStrLn ""
+    askChar selectionMap = do
+      line <- getLine
+      if T.length line > 0
+        then case M.lookup (T.head line) selectionMap of
+               Nothing -> do
+                 putStrLn "choose a letter from the grid"
+                 askChar selectionMap
+               Just x -> return x
+        else askChar selectionMap
+
+startingBoard :: ST s (BoardState s)
+startingBoard = do
+  board <- blankGrid Empty
+  do
     setTile (0, 0) Blue board
     setTile (6, 6) Blue board
     setTile (0, 6) Green board
     setTile (6, 0) Green board
-  printBoard board
-  blues <- stToIO $ findTiles (== Blue) board
-  print blues
-  moves <- stToIO $ validMoves (0, 0) board
-  print moves
-  stToIO $ applyMove (Spawn (0, 1)) Blue board
-  stToIO $ applyMove (Spawn (0, 2)) Blue board
-  stToIO $ applyMove (Spawn (0, 3)) Blue board
-  stToIO $ applyMove (Spawn (0, 4)) Blue board
-  stToIO $ applyMove (Spawn (0, 5)) Blue board
-  printBoard board
-  where printBoard board = do
-          putStrLn =<< stToIO (showGrid showSquare board)
-          putStrLn ""
+  return board
+
+runGame :: IO ()
+runGame = do
+  rows <- stToIO startingBoard
+  uiRows <- stToIO $ blankGrid ' '
+  let f = do
+        takeTurn Blue rows uiRows
+        takeTurn Green rows uiRows
+        f
+  f
+
+main :: IO ()
+main = do
+  putStrLn "Hi!"
+  runGame
