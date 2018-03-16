@@ -4,6 +4,7 @@
 module Main where
 
 import           ClassyPrelude
+import           Prelude             ((!!))
 
 import           Control.Monad.ST
 import qualified Data.Text           as T
@@ -94,21 +95,12 @@ validMoves source@(irow, icol) rows = do
   return $ jumps <> spawns
   where
     emptyTile (irow, icol) =
-      if irow < 0 || irow >= dim || icol < 0 || icol >= dim
+      if not $ inBounds (irow, icol)
         then return False
         else do
           tile <- getTile (irow, icol) rows
           return $ tile == Empty
-    spawns_ =
-      [ (irow - 1, icol - 1)
-      , (irow - 1, icol)
-      , (irow - 1, icol + 1)
-      , (irow, icol - 1)
-      , (irow, icol + 1)
-      , (irow + 1, icol - 1)
-      , (irow + 1, icol)
-      , (irow + 1, icol + 1)
-      ]
+    spawns_ = unboundedNeighborIndices source
     jumps_ =
       [ (irow - 2, icol - 2)
       , (irow - 2, icol - 1)
@@ -128,6 +120,51 @@ validMoves source@(irow, icol) rows = do
       , (irow + 2, icol + 2)
       ]
 
+inBounds :: (Int, Int) -> Bool
+inBounds (irow, icol) = irow >= 0 && irow < dim && icol >= 0 && icol < dim
+
+neighborIndices :: (Int, Int) -> [(Int, Int)]
+neighborIndices source =
+  filter inBounds $ unboundedNeighborIndices source
+
+unboundedNeighborIndices :: (Int, Int) -> [(Int, Int)]
+unboundedNeighborIndices (irow, icol) =
+  [ (irow - 1, icol - 1)
+  , (irow - 1, icol)
+  , (irow - 1, icol + 1)
+  , (irow, icol - 1)
+  , (irow, icol + 1)
+  , (irow + 1, icol - 1)
+  , (irow + 1, icol)
+  , (irow + 1, icol + 1)
+  ]
+
+setNeighbors :: (Int, Int) -> Square -> Grid s Square -> ST s ()
+setNeighbors source tile rows =
+  forM_
+    (neighborIndices source)
+    (\index -> do
+       originalTile <- getTile index rows
+       case originalTile of
+         Empty -> return ()
+         _     -> setTile index tile rows)
+
+applyJump :: (Int, Int) -> (Int, Int) -> Square -> BoardState s -> ST s ()
+applyJump src dest tile rows = do
+  return ()
+  setTile src Empty rows
+  setTile dest tile rows
+  setNeighbors dest tile rows
+
+applySpawn :: (Int, Int) -> Square -> BoardState s -> ST s ()
+applySpawn src tile rows = do
+  setTile src tile rows
+  setNeighbors src tile rows
+
+applyMove :: Move -> Square -> BoardState s -> ST s ()
+applyMove jump@(Jump src dest) tile rows = applyJump src dest tile rows
+applyMove spawn@(Spawn src) tile rows    = applySpawn src tile rows
+
 main :: IO ()
 main = do
   putStrLn "Hi!"
@@ -143,6 +180,12 @@ main = do
   print blues
   moves <- stToIO $ validMoves (0, 0) board
   print moves
+  stToIO $ applyMove (Spawn (0, 1)) Blue board
+  stToIO $ applyMove (Spawn (0, 2)) Blue board
+  stToIO $ applyMove (Spawn (0, 3)) Blue board
+  stToIO $ applyMove (Spawn (0, 4)) Blue board
+  stToIO $ applyMove (Spawn (0, 5)) Blue board
+  printBoard board
   where printBoard board = do
           putStrLn =<< stToIO (showGrid showSquare board)
           putStrLn ""
